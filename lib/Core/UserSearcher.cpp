@@ -48,7 +48,8 @@ cl::list<Searcher::CoreSearchType> CoreSearch(
                    "use NURS with Instr-Count"),
         clEnumValN(Searcher::NURS_CPICnt, "nurs:cpicnt",
                    "use NURS with CallPath-Instr-Count"),
-        clEnumValN(Searcher::NURS_QC, "nurs:qc", "use NURS with Query-Cost")
+        clEnumValN(Searcher::NURS_QC, "nurs:qc", "use NURS with Query-Cost"),
+        clEnumValN(Searcher::Param, "param", "use Parameterized Search")
             KLEE_LLVM_CL_VAL_END),
     cl::cat(SearchCat));
 
@@ -83,7 +84,8 @@ cl::opt<std::string> BatchTime(
 
 } // namespace
 
-void klee::initializeSearchOptions() {
+
+bool klee::initializeSearchOptions() {
   // default values
   if (CoreSearch.empty()) {
     if (UseMerge){
@@ -94,6 +96,9 @@ void klee::initializeSearchOptions() {
       CoreSearch.push_back(Searcher::NURS_CovNew);
     }
   }
+  else if (std::find(CoreSearch.begin(), CoreSearch.end(), Searcher::Param) != CoreSearch.end())
+    return true; 
+  return false;
 }
 
 bool klee::userSearcherRequiresMD2U() {
@@ -105,7 +110,9 @@ bool klee::userSearcherRequiresMD2U() {
 }
 
 
-Searcher *getNewSearcher(Searcher::CoreSearchType type, Executor &executor) {
+Searcher *getNewSearcher(Searcher::CoreSearchType type,
+			 Executor &executor,
+			 const std::string& weightFile) {
   Searcher *searcher = NULL;
   switch (type) {
   case Searcher::DFS: searcher = new DFSSearcher(); break;
@@ -118,21 +125,24 @@ Searcher *getNewSearcher(Searcher::CoreSearchType type, Executor &executor) {
   case Searcher::NURS_ICnt: searcher = new WeightedRandomSearcher(WeightedRandomSearcher::InstCount); break;
   case Searcher::NURS_CPICnt: searcher = new WeightedRandomSearcher(WeightedRandomSearcher::CPInstCount); break;
   case Searcher::NURS_QC: searcher = new WeightedRandomSearcher(WeightedRandomSearcher::QueryCost); break;
+  case Searcher::Param: searcher = new ParameterizedSearcher(executor, weightFile); break;
   }
 
   return searcher;
 }
 
-Searcher *klee::constructUserSearcher(Executor &executor) {
+Searcher *klee::constructUserSearcher(Executor &executor, const std::string& weightFile) {
+  if (CoreSearch[0] == Searcher::Param)
+    assert(!weightFile.empty() && "weight file is empty");
 
-  Searcher *searcher = getNewSearcher(CoreSearch[0], executor);
+  Searcher *searcher = getNewSearcher(CoreSearch[0], executor, weightFile);
   
   if (CoreSearch.size() > 1) {
     std::vector<Searcher *> s;
     s.push_back(searcher);
 
     for (unsigned i=1; i<CoreSearch.size(); i++)
-      s.push_back(getNewSearcher(CoreSearch[i], executor));
+      s.push_back(getNewSearcher(CoreSearch[i], executor, weightFile));
     
     searcher = new InterleavedSearcher(s);
   }

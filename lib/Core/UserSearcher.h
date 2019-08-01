@@ -10,6 +10,8 @@
 #ifndef KLEE_USERSEARCHER_H
 #define KLEE_USERSEARCHER_H
 
+#include <string>
+
 namespace klee {
   class Executor;
   class Searcher;
@@ -17,9 +19,9 @@ namespace klee {
   // XXX gross, should be on demand?
   bool userSearcherRequiresMD2U();
 
-  void initializeSearchOptions();
+  bool initializeSearchOptions();
 
-  Searcher *constructUserSearcher(Executor &executor);
+  Searcher *constructUserSearcher(Executor &executor, const std::string& weightFile);
 }
 
 #endif

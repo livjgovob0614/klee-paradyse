@@ -16,6 +16,7 @@
 #include <memory>
 #include <set>
 #include <sqlite3.h>
+#include <string>
 
 namespace llvm {
   class BranchInst;
@@ -38,6 +39,7 @@ namespace klee {
 
     Executor &executor;
     std::string objectFilename;
+    std::string curFunc;
 
     std::unique_ptr<llvm::raw_fd_ostream> istatsFile;
     ::sqlite3 *statsFile = nullptr;

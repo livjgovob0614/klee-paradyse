@@ -85,6 +85,7 @@
 
 using namespace llvm;
 using namespace klee;
+using klee::Branch;
 
 namespace klee {
 cl::OptionCategory DebugCat("Debugging options",
@@ -347,7 +348,6 @@ cl::opt<double> MaxStaticCPSolvePct(
              "instructions (default=1.0 (always))"),
     cl::cat(TerminationCat));
 
-
 /*** Debugging options ***/
 
 /// The different query logging solvers that can switched on/off
@@ -399,6 +399,8 @@ cl::opt<bool> DebugCheckForImpliedValues(
     cl::desc("Debug the implied value optimization"),
     cl::cat(DebugCat));
 
+  cl::opt<std::string>
+  Weight("weight", cl::desc("Weight file for Parameterized Searcher"));
 } // namespace
 
 namespace klee {
@@ -428,8 +430,7 @@ Executor::Executor(LLVMContext &ctx, const InterpreterOptions &opts,
       pathWriter(0), symPathWriter(0), specialFunctionHandler(0),
       processTree(0), replayKTest(0), replayPath(0), usingSeeds(0),
       atMemoryLimit(false), inhibitForking(false), haltExecution(false),
-      ivcEnabled(false), debugLogBuffer(debugBufferString) {
-
+      ivcEnabled(false), debugLogBuffer(debugBufferString), less_cnt(0) {
 
   const time::Span maxCoreSolverTime(MaxCoreSolverTime);
   maxInstructionTime = time::Span(MaxInstructionTime);
@@ -453,7 +454,7 @@ Executor::Executor(LLVMContext &ctx, const InterpreterOptions &opts,
   this->solver = new TimingSolver(solver, EqualitySubstitution);
   memory = new MemoryManager(&arrayCache);
 
-  initializeSearchOptions();
+  isParamSearch = initializeSearchOptions();
 
   if (OnlyOutputStatesCoveringNew && !StatsTracker::useIStats())
     klee_error("To use --only-output-states-covering-new, you need to enable --output-istats.");
@@ -797,7 +798,9 @@ void Executor::initializeGlobals(ExecutionState &state) {
 
 void Executor::branch(ExecutionState &state, 
                       const std::vector< ref<Expr> > &conditions,
-                      std::vector<ExecutionState*> &result) {
+                      std::vector<ExecutionState*> &result,
+                      KInstruction *ki,
+                      std::vector<int> caseCheck) {
   TimerStatIncrementer timer(stats::forkTime);
   unsigned N = conditions.size();
   assert(N);
@@ -876,13 +879,33 @@ void Executor::branch(ExecutionState &state,
     }
   }
 
-  for (unsigned i=0; i<N; ++i)
-    if (result[i])
-      addConstraint(*result[i], conditions[i]);
+// XXX 'false' only at last branch (default,..)
+  const StackFrame &sf = state.stack.back();
+  Function *f = sf.kf->function;
+  string fn = f->getName().str();
+
+  for (unsigned i=0; i<N; ++i) {
+    int caseId = i;
+    if (i<N-1 && result[i]) {
+      if (!caseCheck.empty()) {
+        caseId = caseCheck[i];
+      }
+      addConstraint(*result[i], conditions[i], caseId, fn, ki);
+    }
+    else if (result[i])
+      addConstraint(*result[i], conditions[i], 0, fn, ki);
+    else
+      assert("fail to get result in branch(..)");
+  }
 }
 
 Executor::StatePair 
-Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
+Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
+		KInstruction *ki) {
+  const StackFrame &sf = current.stack.back();
+  Function *f = sf.kf->function;
+  string fn = f->getName().str();
+
   Solver::Validity res;
   std::map< ExecutionState*, std::vector<SeedInfo> >::iterator it = 
     seedMap.find(&current);
@@ -910,7 +933,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       bool success = solver->getValue(current, condition, value);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
-      addConstraint(current, EqExpr::create(value, condition));
+      addConstraint(current, EqExpr::create(value, condition), 1, fn, ki);
       condition = value;
     }
   }
@@ -941,10 +964,10 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         // add constraints
         if(branch) {
           res = Solver::True;
-          addConstraint(current, condition);
+          addConstraint(current, condition, true, fn, ki);
         } else  {
           res = Solver::False;
-          addConstraint(current, Expr::createIsZero(condition));
+          addConstraint(current, Expr::createIsZero(condition), false, fn, ki);
         }
       }
     } else if (res==Solver::Unknown) {
@@ -966,10 +989,10 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
 
         TimerStatIncrementer timer(stats::forkTime);
         if (theRNG.getBool()) {
-          addConstraint(current, condition);
+          addConstraint(current, condition, true, fn, ki);
           res = Solver::True;        
         } else {
-          addConstraint(current, Expr::createIsZero(condition));
+          addConstraint(current, Expr::createIsZero(condition), false, fn, ki);
           res = Solver::False;
         }
       }
@@ -1002,7 +1025,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       assert(trueSeed || falseSeed);
       
       res = trueSeed ? Solver::True : Solver::False;
-      addConstraint(current, trueSeed ? condition : Expr::createIsZero(condition));
+      addConstraint(current, trueSeed ? condition : Expr::createIsZero(condition), trueSeed, fn, ki);
     }
   }
 
@@ -1096,8 +1119,8 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       }
     }
 
-    addConstraint(*trueState, condition);
-    addConstraint(*falseState, Expr::createIsZero(condition));
+    addConstraint(*trueState, condition, true, fn, ki);
+    addConstraint(*falseState, Expr::createIsZero(condition), false, fn, ki);
 
     // Kinda gross, do we even really still want this option?
     if (MaxDepth && MaxDepth<=trueState->depth) {
@@ -1110,7 +1133,11 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
   }
 }
 
-void Executor::addConstraint(ExecutionState &state, ref<Expr> condition) {
+void Executor::addConstraint(ExecutionState &state,
+			     ref<Expr> condition,
+                             unsigned caseId,
+                             string &functionName,
+                             KInstruction *ki) {
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(condition)) {
     if (!CE->isTrue())
       llvm::report_fatal_error("attempt to add invalid constraint");
@@ -1138,9 +1165,34 @@ void Executor::addConstraint(ExecutionState &state, ref<Expr> condition) {
       klee_warning("seeds patched for violating constraint"); 
   }
 
-  state.addConstraint(condition);
+  bool added = state.addConstraint(condition);
+
+  if (isParamSearch && added) {
+    unsigned id = ki->info->id;
+    auto br_it = branchInfo.find(std::make_pair(id, caseId));
+
+    Branch* br;
+    if (br_it == branchInfo.end()) {
+      br = new Branch(functionName, id, caseId, false, false, false);
+      branchInfo[std::make_pair(id, caseId)] = br;
+      //klee_warning("** new Branch: %s, id:%d", functionName.c_str(), id);
+    }
+    else
+      br = br_it->second;
+
+    state.lastBranch = br;
+
+// test
+/*
+    klee_message("&&&& in addConst. the state's all constraints:");
+    for (auto i=state.constraints.begin(); i!=state.constraints.end();++i) {
+      klee_message(" ");
+      llvm::errs() << *i << "\n";
+    }
+*/
+  }
   if (ivcEnabled)
-    doImpliedValueConcretization(state, condition, 
+    doImpliedValueConcretization(state, condition,
                                  ConstantExpr::alloc(1, Expr::Bool));
 }
 
@@ -1221,7 +1273,11 @@ Executor::toConstant(ExecutionState &state,
   else
     klee_warning_once(reason, "%s", os.str().c_str());
 
-  addConstraint(state, EqExpr::create(e, value));
+  const StackFrame &sf = state.stack.back();
+  Function *f = sf.kf->function;
+  string fn = f->getName().str();
+
+  addConstraint(state, EqExpr::create(e, value), true, fn, state.pc);
     
   return value;
 }
@@ -1258,7 +1314,7 @@ void Executor::executeGetValue(ExecutionState &state,
       conditions.push_back(EqExpr::create(e, *vit));
 
     std::vector<ExecutionState*> branches;
-    branch(state, conditions, branches);
+    branch(state, conditions, branches, target, std::vector<int>());
     
     std::vector<ExecutionState*>::iterator bit = branches.begin();
     for (std::set< ref<Expr> >::iterator vit = values.begin(), 
@@ -1513,6 +1569,15 @@ void Executor::executeCall(ExecutionState &state,
     unsigned numFormals = f->arg_size();
     for (unsigned i=0; i<numFormals; ++i) 
       bindArgument(kf, i, state, arguments[i]);
+
+// for feature 35~39, 40
+    if (isParamSearch && !kf->isCovered) {
+      kf->isCovered = 1;
+      ExecutionState::recently_reached_function = f->getName();
+
+      FuncInfo fi(f->getName(), f->size());
+      unreachedFunc.erase(fi);
+    }
   }
 }
 
@@ -1603,6 +1668,17 @@ static inline const llvm::fltSemantics * fpWidthToSemantics(unsigned width) {
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   Instruction *i = ki->inst;
+  StackFrame &sf = state.stack.back();
+  Function *f = sf.kf->function;
+  const std::string func = f->getName().str();
+
+/*
+  if (func.compare("__get_sym_str") == 0) {
+    auto m_it = numBranchesOfFunc.find(func);
+    klee_warning("%s br: %d", func.c_str(), m_it->second);
+  }
+*/
+
   switch (i->getOpcode()) {
     // Control flow
   case Instruction::Ret: {
@@ -1680,7 +1756,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> cond = eval(ki, 0, state).value;
 
       cond = optimizer.optimizeExpr(cond, false);
-      Executor::StatePair branches = fork(state, cond, false);
+      Executor::StatePair branches = fork(state, cond, false, ki);
+      //klee_message("\n*******************fork1*******************");
+      //klee_message("br: ");
+      //llvm::errs() << *bi << "\n";
 
       // NOTE: There is a hidden dependency here, markBranchVisited
       // requires that we still be in the context of the branch
@@ -1689,10 +1768,43 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       if (statsTracker && state.stack.back().kf->trackCoverage)
         statsTracker->markBranchVisited(branches.first, branches.second);
 
-      if (branches.first)
+// here 
+      if (!branches.first && branches.second) {
+        Branch* br = branches.second->lastBranch;
+        if (br && !br->isCovered) {
+          auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+          --m_it->second;
+          br->isCovered = 1;
+          }
+        }
+      }
+      else if (!branches.second && branches.first) {
+        Branch* br = branches.first->lastBranch;
+        if (br && !br->isCovered) {
+          auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            //klee_warning("%s numbr is less than 0..(%d)", func.c_str(), m_it->second);
+            less_cnt++;
+          }
+          //assert(m_it->second > 0 && "wrong number of branches");
+          else {
+          --m_it->second;
+          br->isCovered = 1;
+          }
+        }
+      }
+
+// check 0508-2?
+      if (branches.first) {
         transferToBasicBlock(bi->getSuccessor(0), bi->getParent(), *branches.first);
-      if (branches.second)
+      }
+      if (branches.second) {
         transferToBasicBlock(bi->getSuccessor(1), bi->getParent(), *branches.second);
+      }
     }
     break;
   }
@@ -1751,7 +1863,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
     // fork states
     std::vector<ExecutionState *> branches;
-    branch(state, expressions, branches);
+    branch(state, expressions, branches, ki, std::vector<int>());
 
     // terminate error state
     if (result) {
@@ -1811,6 +1923,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> defaultValue = ConstantExpr::alloc(1, Expr::Bool);
 
       // iterate through all non-default cases but in order of the expressions
+      std::vector<int> caseCheck;
       for (std::map<ref<Expr>, BasicBlock *>::iterator
                it = expressionOrder.begin(),
                itE = expressionOrder.end();
@@ -1829,6 +1942,13 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         if (result) {
           BasicBlock *caseSuccessor = it->second;
 
+          int caseId = 1;
+	  for (auto ii: si->cases()) {
+	    if (ii.getCaseSuccessor() == caseSuccessor)
+	      break;
+	    ++caseId;
+	  }
+
           // Handle the case that a basic block might be the target of multiple
           // switch cases.
           // Currently we generate an expression containing all switch-case
@@ -1843,6 +1963,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
           // Only add basic blocks which have not been target of a branch yet
           if (res.second) {
+	    caseCheck.push_back(caseId);
             bbOrder.push_back(caseSuccessor);
           }
         }
@@ -1859,6 +1980,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
             branchTargets.insert(
                 std::make_pair(si->getDefaultDest(), defaultValue));
         if (ret.second) {
+	  caseCheck.push_back(0);
           bbOrder.push_back(si->getDefaultDest());
         }
       }
@@ -1872,7 +1994,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         conditions.push_back(branchTargets[*it]);
       }
       std::vector<ExecutionState*> branches;
-      branch(state, conditions, branches);
+      branch(state, conditions, branches, ki, caseCheck);
 
       std::vector<ExecutionState*>::iterator bit = branches.begin();
       for (std::vector<BasicBlock *>::iterator it = bbOrder.begin(),
@@ -1977,7 +2099,38 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         bool success = solver->getValue(*free, v, value);
         assert(success && "FIXME: Unhandled solver failure");
         (void) success;
-        StatePair res = fork(*free, EqExpr::create(v, value), true);
+        StatePair res = fork(*free, EqExpr::create(v, value), true, ki);
+      //klee_message("fork2");
+
+// for feature
+        if (!res.first && res.second) {
+          Branch* br = res.second->lastBranch;
+          if (br && !br->isCovered) {
+            auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+            --m_it->second;
+            br->isCovered = 1;
+          }
+          }
+        }
+        else if (!res.second && res.first) {
+          Branch* br = res.first->lastBranch;
+          if (br && !br->isCovered) {
+            auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+            --m_it->second;
+            br->isCovered = 1;
+            }
+          }
+        }
+
+
         if (res.first) {
           uint64_t addr = value->getZExtValue();
           if (legalFunctions.count(addr)) {
@@ -2941,15 +3094,23 @@ void Executor::run(ExecutionState &initialState) {
       return;
     }
   }
+  string weightFile;
+  if (!Weight.empty())
+    weightFile = Weight;
+  else
+    weightFile = "";
 
-  searcher = constructUserSearcher(*this);
+  searcher = constructUserSearcher(*this, weightFile);
 
   std::vector<ExecutionState *> newStates(states.begin(), states.end());
   searcher->update(0, newStates, std::vector<ExecutionState *>());
 
+  klee_warning("start main");
   while (!states.empty() && !haltExecution) {
     ExecutionState &state = searcher->selectState();
+
     KInstruction *ki = state.pc;
+
     stepInstruction(state);
 
     executeInstruction(state, ki);
@@ -3046,6 +3207,13 @@ void Executor::terminateState(ExecutionState &state) {
                       "replay did not consume all objects in test input.");
   }
 
+/*
+  klee_message("\n-------------------terminate State!-----------------\nthe state's all const:");
+    for (auto i=state.constraints.begin(); i!=state.constraints.end();++i) {
+      klee_message(" ");
+      llvm::errs() << *i << "\n";
+    }
+*/  
   interpreterHandler->incPathsExplored();
 
   std::vector<ExecutionState *>::iterator it =
@@ -3344,7 +3512,8 @@ ref<Expr> Executor::replaceReadWithSymbolic(ExecutionState &state,
   ref<Expr> res = Expr::createTempRead(array, e->getWidth());
   ref<Expr> eq = NotOptimizedExpr::create(EqExpr::create(e, res));
   llvm::errs() << "Making symbolic: " << eq << "\n";
-  state.addConstraint(eq);
+  if (state.addConstraint(eq))
+    klee_warning("check replaceReadWithSymbolic!");
   return res;
 }
 
@@ -3432,8 +3601,39 @@ void Executor::executeAlloc(ExecutionState &state,
       example = tmp;
     }
 
-    StatePair fixedSize = fork(state, EqExpr::create(example, size), true);
-    
+    StatePair fixedSize = fork(state, EqExpr::create(example, size), true, state.pc);
+
+    StackFrame &sf = state.stack.back();
+    Function *f = sf.kf->function;
+    const std::string func = f->getName().str();
+
+    if (!fixedSize.first && fixedSize.second) {
+      Branch* br = fixedSize.second->lastBranch;
+      if (br && !br->isCovered) {
+        auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+         --m_it->second;
+        br->isCovered = 1;
+        }
+      }
+    }
+    else if (!fixedSize.second && fixedSize.first) {
+      Branch* br = fixedSize.first->lastBranch;
+      if (br && !br->isCovered) {
+        auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+        --m_it->second;
+        br->isCovered = 1;
+        }
+      }
+    }
+
     if (fixedSize.second) { 
       // Check for exactly two values
       ref<ConstantExpr> tmp;
@@ -3455,7 +3655,35 @@ void Executor::executeAlloc(ExecutionState &state,
         StatePair hugeSize = 
           fork(*fixedSize.second, 
                UltExpr::create(ConstantExpr::alloc(1U<<31, W), size),
-               true);
+               true, state.pc);
+        if (!hugeSize.first && hugeSize.second) {
+          Branch* br = hugeSize.second->lastBranch;
+          if (br && !br->isCovered) {
+            auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+            --m_it->second;
+            br->isCovered = 1;
+           }
+          }
+        }
+        else if (!hugeSize.second && hugeSize.first) {
+          Branch* br = hugeSize.first->lastBranch;
+          if (br && !br->isCovered) {
+            auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+            --m_it->second;
+            br->isCovered = 1;
+            }
+          }
+        }
+
+
         if (hugeSize.first) {
           klee_message("NOTE: found huge malloc, returning 0");
           bindLocal(target, *hugeSize.first, 
@@ -3484,15 +3712,50 @@ void Executor::executeAlloc(ExecutionState &state,
 void Executor::executeFree(ExecutionState &state,
                            ref<Expr> address,
                            KInstruction *target) {
+  if (target==NULL)
+    target = state.pc;
   address = optimizer.optimizeExpr(address, true);
-  StatePair zeroPointer = fork(state, Expr::createIsZero(address), true);
+  StatePair zeroPointer = fork(state, Expr::createIsZero(address), true, target);
+
+  StackFrame &sf = state.stack.back();
+  Function *f = sf.kf->function;
+  const std::string func = f->getName().str();
+
+  if (!zeroPointer.first && zeroPointer.second) {
+     Branch* br = zeroPointer.second->lastBranch;
+     if (br && !br->isCovered) {
+       auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+       --m_it->second;
+       br->isCovered = 1;
+        }
+     }
+  }
+  else if (!zeroPointer.second && zeroPointer.first) {
+     Branch* br = zeroPointer.first->lastBranch;
+     if (br && !br->isCovered) {
+       auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+       --m_it->second;
+       br->isCovered = 1;
+        }
+     }
+  }
+
+
   if (zeroPointer.first) {
     if (target)
       bindLocal(target, *zeroPointer.first, Expr::createPointer(0));
   }
   if (zeroPointer.second) { // address != 0
     ExactResolutionList rl;
-    resolveExact(*zeroPointer.second, address, rl, "free");
+    resolveExact(*zeroPointer.second, address, rl, "free", target);
     
     for (Executor::ExactResolutionList::iterator it = rl.begin(), 
            ie = rl.end(); it != ie; ++it) {
@@ -3515,7 +3778,8 @@ void Executor::executeFree(ExecutionState &state,
 void Executor::resolveExact(ExecutionState &state,
                             ref<Expr> p,
                             ExactResolutionList &results, 
-                            const std::string &name) {
+                            const std::string &name,
+			    KInstruction *ki) {
   p = optimizer.optimizeExpr(p, true);
   // XXX we may want to be capping this?
   ResolutionList rl;
@@ -3526,7 +3790,40 @@ void Executor::resolveExact(ExecutionState &state,
        it != ie; ++it) {
     ref<Expr> inBounds = EqExpr::create(p, it->first->getBaseExpr());
     
-    StatePair branches = fork(*unbound, inBounds, true);
+    StatePair branches = fork(*unbound, inBounds, true, ki);
+    StackFrame &sf = state.stack.back();
+    Function *f = sf.kf->function;
+    const std::string func = f->getName().str();
+
+    if (!branches.first && branches.second) {
+      Branch* br = branches.second->lastBranch;
+      if (br && !br->isCovered) {
+        auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+
+        --m_it->second;
+        br->isCovered = 1;
+        }
+      }
+    }
+    else if (!branches.second && branches.first) {
+      Branch* br = branches.first->lastBranch;
+      if (br && !br->isCovered) {
+        auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+
+        --m_it->second;
+        br->isCovered = 1;
+        }
+      }
+    }
+
     
     if (branches.first)
       results.push_back(std::make_pair(*it, branches.first));
@@ -3547,6 +3844,9 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                       ref<Expr> address,
                                       ref<Expr> value /* undef if read */,
                                       KInstruction *target /* undef if write */) {
+  if (target == NULL)
+    target = state.pc;
+
   Expr::Width type = (isWrite ? value->getWidth() : 
                      getWidthForLLVMType(target->inst->getType()));
   unsigned bytes = Expr::getMinBytesForWidth(type);
@@ -3632,7 +3932,41 @@ void Executor::executeMemoryOperation(ExecutionState &state,
     const ObjectState *os = i->second;
     ref<Expr> inBounds = mo->getBoundsCheckPointer(address, bytes);
     
-    StatePair branches = fork(*unbound, inBounds, true);
+    StatePair branches = fork(*unbound, inBounds, true, target);
+
+    StackFrame &sf = state.stack.back();
+    Function *f = sf.kf->function;
+    const std::string func = f->getName().str();
+
+    if (!branches.first && branches.second) {
+      Branch* br = branches.second->lastBranch;
+      if (br && !br->isCovered) {
+        auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+
+        --m_it->second;
+        br->isCovered = 1;
+        }
+      }
+    }
+    else if (!branches.second && branches.first) {
+      Branch* br = branches.first->lastBranch;
+      if (br && !br->isCovered) {
+        auto m_it = numBranchesOfFunc.find(func);
+          if (m_it->second <= 0) {
+            less_cnt++;
+          }
+          else {
+
+        --m_it->second;
+        br->isCovered = 1;
+        }
+      }
+    }
+
     ExecutionState *bound = branches.first;
 
     // bound can be 0 on failure or overlapped 

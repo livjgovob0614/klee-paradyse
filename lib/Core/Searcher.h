@@ -14,6 +14,7 @@
 
 #include "llvm/Support/raw_ostream.h"
 
+#include "Feature.h"
 #include <map>
 #include <queue>
 #include <set>
@@ -79,7 +80,8 @@ namespace klee {
       NURS_Depth,
       NURS_ICnt,
       NURS_CPICnt,
-      NURS_QC
+      NURS_QC,
+      Param
     };
   };
 
@@ -280,6 +282,49 @@ namespace klee {
            it != ie; ++it)
         (*it)->printName(os);
       os << "</InterleavedSearcher>\n";
+    }
+  };
+
+  class ParameterizedSearcher : public Searcher {
+  public:
+    //vector? or else?
+    std::set<ExecutionState*> states;
+    ExecutionState* top;
+    bool doUpdate;
+
+  private:
+    std::vector<double> weights_;
+    std::vector<DynamicFeature*> dyFeatures_;
+    std::vector<unsigned> bid_history_;
+
+    Executor &executor;
+
+
+    // ** note : size_t -> ExecutionState*
+    typedef std::map< ExecutionState*, vector<int> > fv_map_t;
+
+    // state! not last branch ^T^ .. where is the feature state stored?
+    void updateFeatureState(const std::set<ExecutionState*>& states);
+
+    fv_map_t extractFeatures(const std::set<ExecutionState*>& states);
+
+    // don't need to check the path constraints solving.( satisfiability?)
+    // I thought scored value need to be stored, but from now, I will remove it
+    // ** note : std::vector< pair<double, ExecutionState*> -> ExecutionState*
+    ExecutionState* computeScores(const fv_map_t& fvmap);
+
+
+  public:
+    ParameterizedSearcher(Executor &_executor, const std::string& weightFile);
+    ~ParameterizedSearcher();
+
+    ExecutionState &selectState();
+    void update(ExecutionState *current,
+                const std::vector<ExecutionState *> &addedStates,
+                const std::vector<ExecutionState *> &removedStates);
+    bool empty() { return states.empty(); }
+    void printName(llvm::raw_ostream &os) {
+      os << "Parameterized Searcher\n";
     }
   };
 

@@ -41,6 +41,8 @@ namespace klee {
 
   struct KFunction {
     llvm::Function *function;
+   
+    bool isCovered;
 
     unsigned numArgs, numRegisters;
 

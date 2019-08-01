@@ -188,7 +188,11 @@ WeightedRandomSearcher::~WeightedRandomSearcher() {
 }
 
 ExecutionState &WeightedRandomSearcher::selectState() {
-  return *states->choose(theRNG.getDoubleL());
+  double d = theRNG.getDoubleL();
+  ExecutionState* st = states->choose(d);
+  //klee_warning("selected state's weight: %lf (func:%s)", getWeight(st),st->stack.back().kf->function->getName().str().c_str());
+  return *st;
+  //return *states->choose(theRNG.getDoubleL());
 }
 
 double WeightedRandomSearcher::getWeight(ExecutionState *es) {
@@ -205,6 +209,7 @@ double WeightedRandomSearcher::getWeight(ExecutionState *es) {
   case CPInstCount: {
     StackFrame &sf = es->stack.back();
     uint64_t count = sf.callPathNode->statistics.getValue(stats::instructions);
+    klee_warning("count: %lu", count);
     double inv = 1. / std::max((uint64_t) 1, count);
     return inv;
   }
@@ -220,6 +225,7 @@ double WeightedRandomSearcher::getWeight(ExecutionState *es) {
       double invCovNew = 0.;
       if (es->instsSinceCovNew)
         invCovNew = 1. / std::max(1, (int) es->instsSinceCovNew - 1000);
+      //klee_warning("target state's invConVew:%lf, md2u:%lf", invCovNew, md2u);
       return (invCovNew * invCovNew + invMD2U * invMD2U);
     } else {
       return invMD2U * invMD2U;
@@ -463,3 +469,161 @@ void InterleavedSearcher::update(
          ie = searchers.end(); it != ie; ++it)
     (*it)->update(current, addedStates, removedStates);
 }
+
+
+
+// *** Parameterized Searcher *** /
+
+ParameterizedSearcher::ParameterizedSearcher(Executor &_executor, const std::string& weightFile)
+ : doUpdate(false), executor(_executor)
+{
+  double weight;
+  std::ifstream win(weightFile.c_str());
+  assert(win && "no weight file");
+  while (win >> weight)
+    weights_.push_back(weight);
+
+  assert(weights_.size() == 27 && "weight file size error");
+
+  dyFeatures_.push_back(new IsMostFrequentlyAppearingBranch());
+  dyFeatures_.push_back(new IsLeastFrequentlyAppearingBranch());
+  dyFeatures_.push_back(new IsSelectedStateBefore());
+  dyFeatures_.push_back(new IsFrequentlySelectedBranch(10));
+  dyFeatures_.push_back(new IsFrequentlySelectedBranch(20));
+  dyFeatures_.push_back(new IsFrequentlySelectedBranch(30));
+  dyFeatures_.push_back(new IsNearSelectedBefore());
+  dyFeatures_.push_back(new IsFreshBranch(0));
+  dyFeatures_.push_back(new IsRecentlySelectedBranch(10));
+  dyFeatures_.push_back(new IsRecentlySelectedBranch(20));
+  dyFeatures_.push_back(new IsRecentlySelectedBranch(30));
+  dyFeatures_.push_back(new IsInMostLargestNumOfUncovBr(executor));
+  dyFeatures_.push_back(new IsInMostRecentlyReachedFunc());
+  dyFeatures_.push_back(new IsDeepestState());
+  dyFeatures_.push_back(new IsShallowestState());
+  dyFeatures_.push_back(new InstCount(0));
+  dyFeatures_.push_back(new CPInstCount(0));
+  dyFeatures_.push_back(new IsQueryCostLow());
+  dyFeatures_.push_back(new MinDistToUncov());
+  dyFeatures_.push_back(new CovNew());
+}
+
+ParameterizedSearcher::~ParameterizedSearcher() {}
+
+
+void ParameterizedSearcher::updateFeatureState(const std::set<ExecutionState*>& states)
+{
+  for (auto it = dyFeatures_.begin(); it != dyFeatures_.end(); ++it)
+    (*it)->updateFeatureState(states);
+}
+
+
+std::map< ExecutionState*, std::vector<int> >
+ParameterizedSearcher::extractFeatures(const std::set<ExecutionState*>& states)
+{
+  std::map< ExecutionState*, std::vector<int> > fvmap;
+
+  // for initial state & ..
+  if (states.size() == 1) {
+    fvmap.insert(std::pair<ExecutionState*, std::vector<int>> (*states.begin(), std::vector<int>()));
+    return fvmap;
+  }
+
+  for (auto fit = dyFeatures_.begin(); fit != dyFeatures_.end(); ++fit) {
+    if ((*fit)->isReadyToCompute())
+      (*fit)->computeFeature(states);
+  }
+
+  int i=0;
+  for (auto const& st : states) {
+    Branch *br = st->lastBranch;
+    std::vector<int> fvector = br->static_feature;
+    for (auto fit = dyFeatures_.begin(); fit != dyFeatures_.end(); ++fit) {
+      fvector.push_back((*fit)->predicate(i));
+    }
+    fvmap.insert(std::pair<ExecutionState*, std::vector<int>> (st, fvector));
+    ++i;
+  }
+
+  return fvmap;
+}
+
+ExecutionState*
+ParameterizedSearcher::computeScores(const std::map< ExecutionState*, std::vector<int> > &fvmap)
+{
+  // for initial state...T.T
+  if (fvmap.size() == 1)
+    return fvmap.begin()->first;
+
+  ExecutionState* topState = 0;
+  double topScore = -10000000;
+
+  for (auto it = fvmap.begin(); it != fvmap.end(); ++it) {
+    std::vector<int> fv = it->second;
+    double score = std::inner_product(fv.begin(), fv.end(), weights_.begin(), 0.0);
+    if (topScore < score) {
+      topState = it->first;
+      topScore = score;
+    }
+  }
+  return topState;
+}
+
+ExecutionState &ParameterizedSearcher::selectState()
+{
+  assert(top && "top does not exist!");
+  return *top;
+}
+
+void ParameterizedSearcher::update(ExecutionState* current,
+                         const std::vector<ExecutionState*> &addedStates,
+                         const std::vector<ExecutionState*> &removedStates)
+{
+  if (!removedStates.empty() || !addedStates.empty()) {
+    doUpdate = true;
+  }
+
+  for(auto it = addedStates.begin(); it != addedStates.end(); ++it) {
+    states.insert(*it);
+  }
+
+  for (std::vector<ExecutionState*>::const_iterator it = removedStates.begin(),
+                                                     ie = removedStates.end();
+       it != ie; ++it) {
+    ExecutionState* es = *it;
+
+    // ** for feature 18
+    if (es == top) {
+      ExecutionState::selected_state.clear();
+    }
+
+    set<ExecutionState*>::iterator target = states.find(es);
+    if (target == states.end())
+      assert(false && "invalid state removed");
+
+    states.erase(target);
+  }
+
+///////////////////////////////////////////////////////////////////////////////
+
+  if (doUpdate && !states.empty()) {
+    updateFeatureState(states);
+    const std::map< ExecutionState*, std::vector<int> >& fv_map = extractFeatures(states);
+    top = computeScores(fv_map);
+    doUpdate = false;
+
+    // for feature 18
+    ExecutionState::selected_state.insert(top);
+
+    // for feature 27
+    if (!top->constraints.empty()) {
+      string br_fn = top->lastBranch->functionName;
+      string str = ExecutionState::selected_function;
+      str.replace(0, str.size(), br_fn);
+
+      // for feature 32~34
+      ExecutionState::selected_branch = top->lastBranch;
+      ExecutionState::selected_branch->selectedCount++;
+    }
+  }
+}
+

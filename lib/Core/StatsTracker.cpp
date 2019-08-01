@@ -26,6 +26,10 @@
 #include "MemoryManager.h"
 #include "UserSearcher.h"
 
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Metadata.h"
+
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/CFG.h"
@@ -113,6 +117,7 @@ cl::opt<bool> UseCallPaths("use-call-paths", cl::init(true),
 } // namespace
 
 ///
+static std::vector<Instruction*> getSuccs(Instruction *i);
 
 bool StatsTracker::useStatistics() {
   return OutputStats || OutputIStats;
@@ -123,6 +128,8 @@ bool StatsTracker::useIStats() {
 }
 
 namespace klee {
+  struct FuncInfo;
+
   class WriteIStatsTimer : public Executor::Timer {
     StatsTracker *statsTracker;
     
@@ -196,6 +203,7 @@ StatsTracker::StatsTracker(Executor &_executor, std::string _objectFilename,
     fullBranches(0),
     partialBranches(0),
     updateMinDistToUncovered(_updateMinDistToUncovered) {
+    curFunc = "";
 
   const time::Span statsWriteInterval(StatsWriteInterval);
   if (StatsWriteAfterInstructions > 0 && statsWriteInterval)
@@ -234,23 +242,143 @@ StatsTracker::StatsTracker(Executor &_executor, std::string _objectFilename,
     KFunction *kf = kfp.get();
     kf->trackCoverage = 1;
 
+    Function* f = kf->function;
+    string fname = f->getName().str();
+
+    std::vector<Branch*> pre_br_vec;
+    int pre_br_size = 0;
+
+    int br_cnt = 0;
+    bool isInLoop = false;
+    unsigned loopDepthCheck = 0;
+    llvm::DominatorTree* DT;
+    llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>* KLoop = 0; 
+
+    if (executor.isParamSearch) {
+      // get Loop Info //
+      DT = new llvm::DominatorTree(*f);
+      KLoop = new llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>();
+      KLoop->releaseMemory();
+      KLoop->analyze(*DT);
+    }
     for (unsigned i=0; i<kf->numInstructions; ++i) {
       KInstruction *ki = kf->instructions[i];
+      unsigned id = ki->info->id;
+      std::vector<Branch*> br_vec;
+      unsigned int br_size = 0;
+      bool isSwitchInst = false;
+      bool isLoopBranch = false;
 
       if (OutputIStats) {
-        unsigned id = ki->info->id;
         theStatisticManager->setIndex(id);
         if (kf->trackCoverage && instructionIsCoverable(ki->inst))
           ++stats::uncoveredInstructions;
       }
       
       if (kf->trackCoverage) {
-        if (BranchInst *bi = dyn_cast<BranchInst>(ki->inst))
-          if (!bi->isUnconditional())
+        if (BranchInst *bi = dyn_cast<BranchInst>(ki->inst)) {
+          if (!bi->isUnconditional()) {
+            br_cnt += 2;
+            br_size = 1;
             numBranches++;
+
+  	    //if (i==bb->getTerminator()) {
+  	    BasicBlock *bb = bi->getParent();
+    	    //for (succ_iterator it = succ_begin(bb), ie = succ_end(bb); it != ie; ++it) {
+
+	    if (fname.compare("func") == 0) {
+	     llvm::errs() << "new suc:\n";
+	     BasicBlock* suc = bi->getSuccessor(1);
+	     std::vector<Instruction*> vv = getSuccs(bi);
+	     for (auto i = vv.begin(); i != vv.end(); ++i) {
+		//const InstructionInfo &ii = executor.kmodule->infos->getInfo(i);
+	       llvm::errs() << **i << "\n";
+	     }
+	 	llvm::errs() << "unique suc,pred?\n";
+
+		const BasicBlock* us = bb->getUniqueSuccessor();
+		const Instruction* ir1 = &(us->front());
+		llvm::errs() << "    " << *ir1 << "\n";
+		const BasicBlock* us2 = bb->getUniquePredecessor();
+		const Instruction* ir = &(us2->front());
+		llvm::errs() << "    " << *ir << "\n";
+
+	    }
+	    //klee_warning("Fun: %s, NumSuc: %d", fname.c_str(), bi->getNumSuccessors());
+		
+          }
+        }
+        else if (SwitchInst *si = dyn_cast<SwitchInst>(ki->inst)) {
+          int numCase = si->getNumCases();
+
+          // +1 for default case
+          br_cnt += numCase + 1;
+          br_size = numCase;
+          isSwitchInst = true;
+        }
+
+/////////////////////////////////////////
+/////////////////////////////////////////
+        if (executor.isParamSearch && br_size) {
+          ++br_size;    // for else or default case
+
+          // loop check //
+          BasicBlock* bb = ki->inst->getParent();
+          unsigned ld = KLoop->getLoopDepth(bb);
+          if (loopDepthCheck < ld) {
+            loopDepthCheck = ld;
+            isLoopBranch = true;
+            isInLoop = true;
+          }
+          else if (loopDepthCheck > ld) {
+            loopDepthCheck = ld;
+            if (!loopDepthCheck) {
+              isInLoop = false;
+            }
+          }
+
+          // make branch* //
+	  br_vec.reserve(br_size);
+
+          for (unsigned int i = 0; i < br_size; ++i) {
+            Branch* branch = new Branch(fname, id, i, isSwitchInst, isLoopBranch, isInLoop);
+            br_vec.push_back(branch);
+            executor.branchInfo[std::make_pair(id, i)] = branch;
+          }
+
+          // insert next_branch info //
+          if (pre_br_vec.size() < br_size) {
+            pre_br_vec.resize(br_size);
+          }
+
+          if (!pre_br_vec.empty()) {
+            for (int i = 0; i < pre_br_size; ++i) {
+              for (auto& v : br_vec)
+                pre_br_vec[i]->nextBranch.insert(v);
+            }
+          }
+
+          assert(pre_br_vec.size() >= br_vec.size() && "size error");
+          for (unsigned int i = 0; i < br_size; ++i)
+            pre_br_vec[i] = br_vec[i];
+          pre_br_size = br_size;
+        }
       }
     }
+
+    if (executor.isParamSearch) {
+    	// for feature 35
+    	executor.numBranchesOfFunc[fname] = br_cnt;
+
+    	// for feature 36~38
+    	FuncInfo fi(fname, f->size());
+    	executor.unreachedFunc.insert(fi);
+    }	
+ 
+//    tmp += br_cnt;  
   }
+    //klee_warning("size:%d", tmp);
+    //klee_warning("size:%d", numBranches);
 
   if (OutputStats) {
     auto db_filename = executor.interpreterHandler->getOutputFilename("run.stats");
@@ -401,6 +529,10 @@ void StatsTracker::framePushed(ExecutionState &es, StackFrame *parentFrame) {
   if (OutputIStats) {
     StackFrame &sf = es.stack.back();
 
+    if (curFunc != sf.kf->function->getName().str()) {
+      //klee_warning("########## new function: %s #########", sf.kf->function->getName().str().c_str());
+	curFunc = sf.kf->function->getName().str();
+    }
     if (UseCallPaths) {
       CallPathNode *parent = parentFrame ? parentFrame->callPathNode : 0;
       CallPathNode *cp = callPathManager.getCallPath(parent, 

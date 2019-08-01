@@ -75,6 +75,20 @@ namespace klee {
   class MergeHandler;
   template<class T> class ref;
 
+  struct FuncInfo{
+    std::string functionName;
+    unsigned size;
+
+    FuncInfo(std::string _functionName, unsigned _size)
+     : functionName(_functionName), size(_size) {}
+
+    inline bool operator< (const FuncInfo &fi) const {
+      if (size != fi.size)
+        return size < fi.size;
+      else
+        return functionName < fi.functionName;
+    }
+  };
 
 
   /// \todo Add a context object to keep track of data only live
@@ -118,6 +132,12 @@ public:
     Unhandled
   };
 
+  // for features //
+  std::map< std::pair<unsigned, unsigned>, Branch* > branchInfo;
+  std::map< std::string, int > numBranchesOfFunc;
+  std::set< FuncInfo > unreachedFunc;
+  bool isParamSearch;
+  int less_cnt;
 private:
   static const char *TerminateReasonNames[];
 
@@ -284,7 +304,8 @@ private:
   void resolveExact(ExecutionState &state,
                     ref<Expr> p,
                     ExactResolutionList &results,
-                    const std::string &name);
+                    const std::string &name,
+		    KInstruction *ki);
 
   /// Allocate and bind a new object in a particular state. NOTE: This
   /// function may fork.
@@ -344,18 +365,20 @@ private:
   /// NULL pointers for states which were unable to be created.
   void branch(ExecutionState &state, 
               const std::vector< ref<Expr> > &conditions,
-              std::vector<ExecutionState*> &result);
+              std::vector<ExecutionState*> &result,
+              KInstruction *ki,
+              std::vector<int> caseCheck);
 
   // Fork current and return states in which condition holds / does
   // not hold, respectively. One of the states is necessarily the
   // current state, and one of the states may be null.
-  StatePair fork(ExecutionState &current, ref<Expr> condition, bool isInternal);
+  StatePair fork(ExecutionState &current, ref<Expr> condition, bool isInternal, KInstruction *ki);
 
   /// Add the given (boolean) condition as a constraint on state. This
   /// function is a wrapper around the state's addConstraint function
   /// which also manages propagation of implied values,
   /// validity checks, and seed patching.
-  void addConstraint(ExecutionState &state, ref<Expr> condition);
+  void addConstraint(ExecutionState &state, ref<Expr> condition, unsigned caseId, string &functionName, KInstruction *ki);
 
   // Called on [for now] concrete reads, replaces constant with a symbolic
   // Used for testing.

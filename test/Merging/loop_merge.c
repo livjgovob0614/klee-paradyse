@@ -16,6 +16,7 @@
 // CHECK: generated tests = 2{{$}}
 
 #include <klee/klee.h>
+#include <assert.h>
 
 int main(int argc, char** args){
 
@@ -33,6 +34,9 @@ int main(int argc, char** args){
     }
   }
   klee_close_merge();
+
+  if (x < 4)
+    assert(0);
 
   return 0;
 }

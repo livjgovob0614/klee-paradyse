@@ -65,6 +65,11 @@ StackFrame::~StackFrame() {
 
 /***/
 
+Branch* ExecutionState::selected_branch = 0;
+std::set<ExecutionState*> ExecutionState::selected_state;
+std::string ExecutionState::selected_function = " ";
+std::string ExecutionState::recently_reached_function = " ";
+
 ExecutionState::ExecutionState(KFunction *kf) :
     pc(kf->instructions),
     prevPC(pc),
@@ -76,12 +81,13 @@ ExecutionState::ExecutionState(KFunction *kf) :
     coveredNew(false),
     forkDisabled(false),
     ptreeNode(0),
+    lastBranch(0),
     steppedInstructions(0){
   pushFrame(0, kf);
 }
 
 ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions)
-    : constraints(assumptions), ptreeNode(0) {}
+    : constraints(assumptions), ptreeNode(0), lastBranch(0) {}
 
 ExecutionState::~ExecutionState() {
   for (unsigned int i=0; i<symbolics.size(); i++)
@@ -126,7 +132,8 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     symbolics(state.symbolics),
     arrayNames(state.arrayNames),
     openMergeStack(state.openMergeStack),
-    steppedInstructions(state.steppedInstructions)
+    steppedInstructions(state.steppedInstructions),
+    lastBranch(0)
 {
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;
@@ -141,6 +148,10 @@ ExecutionState *ExecutionState::branch() {
   ExecutionState *falseState = new ExecutionState(*this);
   falseState->coveredNew = false;
   falseState->coveredLines.clear();
+
+  if (selected_state.find(this) != selected_state.end()) {
+    selected_state.insert(falseState);
+  }
 
   weight *= .5;
   falseState->weight -= weight;

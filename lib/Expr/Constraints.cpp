@@ -13,6 +13,7 @@
 #include "klee/OptionCategories.h"
 #include "klee/util/ExprPPrinter.h"
 #include "klee/util/ExprVisitor.h"
+#include "klee/Internal/Support/ErrorHandling.h"
 
 #include "llvm/IR/Function.h"
 #include "llvm/Support/CommandLine.h"
@@ -124,8 +125,9 @@ ref<Expr> ConstraintManager::simplifyExpr(ref<Expr> e) const {
   return ExprReplaceVisitor2(equalities).visit(e);
 }
 
-void ConstraintManager::addConstraintInternal(ref<Expr> e) {
+bool ConstraintManager::addConstraintInternal(ref<Expr> e) {
   // rewrite any known equalities and split Ands into different conjuncts
+  bool changed = false;
 
   switch (e->getKind()) {
   case Expr::Constant:
@@ -136,8 +138,8 @@ void ConstraintManager::addConstraintInternal(ref<Expr> e) {
     // split to enable finer grained independence and other optimizations
   case Expr::And: {
     BinaryExpr *be = cast<BinaryExpr>(e);
-    addConstraintInternal(be->left);
-    addConstraintInternal(be->right);
+    changed = addConstraintInternal(be->left);
+    changed = addConstraintInternal(be->right);
     break;
   }
 
@@ -151,20 +153,42 @@ void ConstraintManager::addConstraintInternal(ref<Expr> e) {
       BinaryExpr *be = cast<BinaryExpr>(e);
       if (isa<ConstantExpr>(be->left)) {
 	ExprReplaceVisitor visitor(be->right, be->left);
+/*
+    klee_message("\n\n## before rewrite: ");
+    for (auto it=constraints.begin(); it !=constraints.end(); ++it) {
+      klee_message("Const: ");
+      llvm::errs() << *it;  
+    }*/
 	rewriteConstraints(visitor);
       }
     }
     constraints.push_back(e);
+    changed = true;
     break;
   }
     
   default:
     constraints.push_back(e);
+    changed = true;
     break;
   }
+
+  if (changed) {
+/*
+    klee_message("\n\n***** addConst: ");
+    for (auto it=constraints.begin(); it !=constraints.end(); ++it) {
+      klee_message("Const: ");
+      llvm::errs() << *it;  
+    }*/
+  }
+
+  return changed;
 }
 
-void ConstraintManager::addConstraint(ref<Expr> e) {
+bool ConstraintManager::addConstraint(ref<Expr> e) {
+  //klee_message("------------------before simplify----------------------");
+  //llvm::errs() << e << "\n----------------after------------------\n";
   e = simplifyExpr(e);
-  addConstraintInternal(e);
+  //llvm::errs() << e << "\n";
+  return addConstraintInternal(e);
 }

@@ -34,6 +34,8 @@ namespace klee {
   private:
     class Node;
     Node *m_root;
+    int choose_cnt;
+    
     
     Node **lookup(T item, Node **parent_out);
     void split(Node *node);

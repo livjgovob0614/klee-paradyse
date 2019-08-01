@@ -583,6 +583,7 @@ void KleeHandler::processTestCase(const ExecutionState &state,
       }
     }
 
+    //klee_warning("m_numGen: %d", m_numGeneratedTests);
     if (m_numGeneratedTests == MaxTests)
       m_interpreter->setHaltExecution(true);
 

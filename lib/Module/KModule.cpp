@@ -420,6 +420,7 @@ static int getOperandNum(Value *v,
 KFunction::KFunction(llvm::Function *_function,
                      KModule *km) 
   : function(_function),
+    isCovered(false),
     numArgs(function->arg_size()),
     numInstructions(0),
     trackCoverage(true) {

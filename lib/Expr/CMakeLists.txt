@@ -24,6 +24,7 @@ klee_add_component(kleaverExpr
   Lexer.cpp
   Parser.cpp
   Updates.cpp
+  Branch.cpp
 )
 
 set(LLVM_COMPONENTS

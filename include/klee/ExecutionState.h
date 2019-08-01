@@ -68,6 +68,13 @@ class ExecutionState {
 public:
   typedef std::vector<StackFrame> stack_ty;
 
+// ** each for feature 32~34, 18, 27, 40 **
+  static Branch* selected_branch;
+  static set<ExecutionState*> selected_state;
+  static string selected_function;
+  static string recently_reached_function;
+
+
 private:
   // unsupported, use copy constructor
   ExecutionState &operator=(const ExecutionState &);
@@ -98,6 +105,9 @@ public:
 
   /// @brief Constraints collected so far
   ConstraintManager constraints;
+
+  /// Branch information
+  Branch* lastBranch;
 
   /// Statistics and information
 
@@ -173,7 +183,7 @@ public:
   void popFrame();
 
   void addSymbolic(const MemoryObject *mo, const Array *array);
-  void addConstraint(ref<Expr> e) { constraints.addConstraint(e); }
+  bool addConstraint(ref<Expr> e) { return constraints.addConstraint(e); }
 
   bool merge(const ExecutionState &b);
   void dumpStack(llvm::raw_ostream &out) const;

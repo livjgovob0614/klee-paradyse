@@ -11,6 +11,7 @@
 #define KLEE_CONSTRAINTS_H
 
 #include "klee/Expr.h"
+#include "Branch.h"
 
 // FIXME: Currently we use ConstraintManager for two things: to pass
 // sets of constraints around, and to optimize constraints. We should
@@ -43,7 +44,7 @@ public:
 
   ref<Expr> simplifyExpr(ref<Expr> e) const;
 
-  void addConstraint(ref<Expr> e);
+  bool addConstraint(ref<Expr> e);
   
   bool empty() const {
     return constraints.empty();
@@ -71,7 +72,7 @@ private:
   // returns true iff the constraints were modified
   bool rewriteConstraints(ExprVisitor &visitor);
 
-  void addConstraintInternal(ref<Expr> e);
+  bool addConstraintInternal(ref<Expr> e);
 };
 
 }
