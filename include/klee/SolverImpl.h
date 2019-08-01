@@ -103,7 +103,7 @@ namespace klee {
 
     virtual char *getConstraintLog(const Query& query)  {
         // dummy
-        return(NULL);
+        return nullptr;
     }
 
     virtual void setCoreSolverTimeout(time::Span timeout) {};
@@ -111,4 +111,4 @@ namespace klee {
 
 }
 
-#endif
+#endif /* KLEE_SOLVERIMPL_H */

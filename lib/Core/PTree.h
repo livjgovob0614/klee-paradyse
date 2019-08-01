@@ -7,10 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef __UTIL_PTREE_H__
-#define __UTIL_PTREE_H__
+#ifndef KLEE_PTREE_H
+#define KLEE_PTREE_H
 
-#include <klee/Expr.h>
+#include "klee/Expr/Expr.h"
 
 namespace klee {
   class ExecutionState;
@@ -22,8 +22,8 @@ namespace klee {
     typedef class PTreeNode Node;
     Node *root;
 
-    PTree(const data_type &_root);
-    ~PTree();
+    explicit PTree(const data_type &_root);
+    ~PTree() = default;
     
     std::pair<Node*,Node*> split(Node *n,
                                  const data_type &leftData,
@@ -36,14 +36,15 @@ namespace klee {
   class PTreeNode {
     friend class PTree;
   public:
-    PTreeNode *parent, *left, *right;
-    ExecutionState *data;
-    ref<Expr> condition;
+    PTreeNode *parent = nullptr;
+    PTreeNode *left = nullptr;
+    PTreeNode *right = nullptr;
+    ExecutionState *data = nullptr;
 
   private:
-    PTreeNode(PTreeNode *_parent, ExecutionState *_data);
-    ~PTreeNode();
+    PTreeNode(PTreeNode * parent, ExecutionState * data);
+    ~PTreeNode() = default;
   };
 }
 
-#endif
+#endif /* KLEE_PTREE_H */

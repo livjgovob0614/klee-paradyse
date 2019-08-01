@@ -330,4 +330,4 @@ namespace klee {
 
 }
 
-#endif
+#endif /* KLEE_SEARCHER_H */

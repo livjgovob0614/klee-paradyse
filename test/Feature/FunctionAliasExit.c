@@ -1,31 +1,31 @@
-// RUN: %clang %s -emit-llvm %O0opt -c -o %t1.bc
+// RUN: %clang %s -emit-llvm %O0opt -c -o %t.bc
 // RUN: rm -rf %t.klee-out
-// RUN: %klee --output-dir=%t.klee-out %t1.bc > %t1.log
-// RUN: grep -c START %t1.log | grep 1
-// RUN: grep -c END %t1.log | grep 2
+// RUN: %klee --output-dir=%t.klee-out -function-alias=exit:end %t.bc 2>&1 | FileCheck %s
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
+// CHECK: KLEE: function-alias: replaced @exit with @end
+
 void start(int x) {
+  // CHECK: START
   printf("START\n");
   if (x == 53)
+    // CHECK: END: status = 1
     exit(1);
 }
 
 void __attribute__ ((noinline)) end(int status) {
-  klee_alias_function("exit", "exit");
   printf("END: status = %d\n", status);
-  exit(status);
+  klee_silent_exit(status);
 }
-
 
 int main() {
   int x;
   klee_make_symbolic(&x, sizeof(x), "x");
 
-  klee_alias_function("exit", "end");
   start(x);
+  // CHECK: END: status = 0
   end(0);
 }

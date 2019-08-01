@@ -7,13 +7,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "klee/Constraints.h"
+#include "klee/Expr/Constraints.h"
 
+#include "klee/Expr/ExprPPrinter.h"
+#include "klee/Expr/ExprVisitor.h"
 #include "klee/Internal/Module/KModule.h"
 #include "klee/OptionCategories.h"
+<<<<<<< HEAD
 #include "klee/util/ExprPPrinter.h"
 #include "klee/util/ExprVisitor.h"
 #include "klee/Internal/Support/ErrorHandling.h"
+=======
+>>>>>>> 5732990c805948249bdc3d43a52cfe050ad66a95
 
 #include "llvm/IR/Function.h"
 #include "llvm/Support/CommandLine.h"

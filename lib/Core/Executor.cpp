@@ -28,7 +28,11 @@
 #include "klee/Common.h"
 #include "klee/Config/Version.h"
 #include "klee/ExecutionState.h"
-#include "klee/Expr.h"
+#include "klee/Expr/Assignment.h"
+#include "klee/Expr/Expr.h"
+#include "klee/Expr/ExprPPrinter.h"
+#include "klee/Expr/ExprSMTLIBPrinter.h"
+#include "klee/Expr/ExprUtil.h"
 #include "klee/Internal/ADT/KTest.h"
 #include "klee/Internal/ADT/RNG.h"
 #include "klee/Internal/Module/Cell.h"
@@ -46,10 +50,6 @@
 #include "klee/SolverCmdLine.h"
 #include "klee/SolverStats.h"
 #include "klee/TimerStatIncrementer.h"
-#include "klee/util/Assignment.h"
-#include "klee/util/ExprPPrinter.h"
-#include "klee/util/ExprSMTLIBPrinter.h"
-#include "klee/util/ExprUtil.h"
 #include "klee/util/GetElementPtrTypeIterator.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
@@ -1375,6 +1375,28 @@ void Executor::stepInstruction(ExecutionState &state) {
     haltExecution = true;
 }
 
+static inline const llvm::fltSemantics *fpWidthToSemantics(unsigned width) {
+  switch (width) {
+#if LLVM_VERSION_CODE >= LLVM_VERSION(4, 0)
+  case Expr::Int32:
+    return &llvm::APFloat::IEEEsingle();
+  case Expr::Int64:
+    return &llvm::APFloat::IEEEdouble();
+  case Expr::Fl80:
+    return &llvm::APFloat::x87DoubleExtended();
+#else
+  case Expr::Int32:
+    return &llvm::APFloat::IEEEsingle;
+  case Expr::Int64:
+    return &llvm::APFloat::IEEEdouble;
+  case Expr::Fl80:
+    return &llvm::APFloat::x87DoubleExtended;
+#endif
+  default:
+    return 0;
+  }
+}
+
 void Executor::executeCall(ExecutionState &state, 
                            KInstruction *ki,
                            Function *f,
@@ -1388,9 +1410,22 @@ void Executor::executeCall(ExecutionState &state,
       // state may be destroyed by this call, cannot touch
       callExternalFunction(state, ki, f, arguments);
       break;
-        
-      // va_arg is handled by caller and intrinsic lowering, see comment for
-      // ExecutionState::varargs
+    case Intrinsic::fabs: {
+      ref<ConstantExpr> arg =
+          toConstant(state, eval(ki, 0, state).value, "floating point");
+      if (!fpWidthToSemantics(arg->getWidth()))
+        return terminateStateOnExecError(
+            state, "Unsupported intrinsic llvm.fabs call");
+
+      llvm::APFloat Res(*fpWidthToSemantics(arg->getWidth()),
+                        arg->getAPValue());
+      Res = llvm::abs(Res);
+
+      bindLocal(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
+      break;
+    }
+    // va_arg is handled by caller and intrinsic lowering, see comment for
+    // ExecutionState::varargs
     case Intrinsic::vastart:  {
       StackFrame &sf = state.stack.back();
 
@@ -1605,7 +1640,7 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
   }
 }
 
-/// Compute the true target of a function call, resolving LLVM and KLEE aliases
+/// Compute the true target of a function call, resolving LLVM aliases
 /// and bitcasts.
 Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
   SmallPtrSet<const GlobalValue*, 3> Visited;
@@ -1618,16 +1653,7 @@ Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
     if (GlobalValue *gv = dyn_cast<GlobalValue>(c)) {
       if (!Visited.insert(gv).second)
         return 0;
-      std::string alias = state.getFnAlias(gv->getName());
-      if (alias != "") {
-        GlobalValue *old_gv = gv;
-        gv = kmodule->module->getNamedValue(alias);
-        if (!gv) {
-          klee_error("Function %s(), alias for %s not found!\n", alias.c_str(),
-                     old_gv->getName().str().c_str());
-        }
-      }
-     
+
       if (Function *f = dyn_cast<Function>(gv))
         return f;
       else if (GlobalAlias *ga = dyn_cast<GlobalAlias>(gv))
@@ -1641,28 +1667,6 @@ Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
         return 0;
     } else
       return 0;
-  }
-}
-
-static inline const llvm::fltSemantics * fpWidthToSemantics(unsigned width) {
-  switch(width) {
-#if LLVM_VERSION_CODE >= LLVM_VERSION(4, 0)
-  case Expr::Int32:
-    return &llvm::APFloat::IEEEsingle();
-  case Expr::Int64:
-    return &llvm::APFloat::IEEEdouble();
-  case Expr::Fl80:
-    return &llvm::APFloat::x87DoubleExtended();
-#else
-  case Expr::Int32:
-    return &llvm::APFloat::IEEEsingle;
-  case Expr::Int64:
-    return &llvm::APFloat::IEEEdouble;
-  case Expr::Fl80:
-    return &llvm::APFloat::x87DoubleExtended;
-#endif
-  default:
-    return 0;
   }
 }
 

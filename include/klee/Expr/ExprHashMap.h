@@ -10,7 +10,7 @@
 #ifndef KLEE_EXPRHASHMAP_H
 #define KLEE_EXPRHASHMAP_H
 
-#include "klee/Expr.h"
+#include "klee/Expr/Expr.h"
 
 #include <ciso646>
 #ifdef _LIBCPP_VERSION
@@ -59,4 +59,4 @@ namespace klee {
 #undef unordered_map
 #undef unordered_set
 
-#endif
+#endif /* KLEE_EXPRHASHMAP_H */

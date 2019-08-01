@@ -24,4 +24,4 @@ namespace klee {
   Searcher *constructUserSearcher(Executor &executor, const std::string& weightFile);
 }
 
-#endif
+#endif /* KLEE_USERSEARCHER_H */

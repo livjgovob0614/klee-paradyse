@@ -17,11 +17,6 @@ set(LLVMCXX "${LLVMCXX} -I${CMAKE_SOURCE_DIR}/include")
 set(NATIVE_CC "${CMAKE_C_COMPILER} ${CMAKE_C_FLAGS} -I ${CMAKE_SOURCE_DIR}/include")
 set(NATIVE_CXX "${CMAKE_CXX_COMPILER} ${CMAKE_CXX_FLAGS} -I ${CMAKE_SOURCE_DIR}/include")
 set(TARGET_TRIPLE "${TARGET_TRIPLE}")
-if (ENABLE_KLEE_UCLIBC)
-  set(ENABLE_UCLIBC 1)
-else()
-  set(ENABLE_UCLIBC 0)
-endif()
 
 # FIXME: Do this to avoid changing the template file that
 # is shared by both build systems.
@@ -129,7 +124,7 @@ configure_file(lit.site.cfg.in
 
 add_custom_target(systemtests
   COMMAND "${LIT_TOOL}" ${LIT_ARGS} "${CMAKE_CURRENT_BINARY_DIR}"
-  DEPENDS klee kleaver klee-replay kleeRuntest
+  DEPENDS klee kleaver klee-replay kleeRuntest gen-bout gen-random-bout
   COMMENT "Running system tests"
   ${ADD_CUSTOM_COMMAND_USES_TERMINAL_ARG}
 )

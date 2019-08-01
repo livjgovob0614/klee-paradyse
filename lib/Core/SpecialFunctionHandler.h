@@ -111,7 +111,6 @@ namespace klee {
     HANDLER(handleDeleteArray);
     HANDLER(handleExit);
     HANDLER(handleErrnoLocation);
-    HANDLER(handleAliasFunction);
     HANDLER(handleFree);
     HANDLER(handleGetErrno);
     HANDLER(handleGetObjSize);
@@ -147,4 +146,4 @@ namespace klee {
   };
 } // End klee namespace
 
-#endif
+#endif /* KLEE_SPECIALFUNCTIONHANDLER_H */

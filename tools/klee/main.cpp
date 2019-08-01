@@ -11,7 +11,7 @@
 
 #include "klee/Config/Version.h"
 #include "klee/ExecutionState.h"
-#include "klee/Expr.h"
+#include "klee/Expr/Expr.h"
 #include "klee/Internal/ADT/KTest.h"
 #include "klee/Internal/ADT/TreeStream.h"
 #include "klee/Internal/Support/Debug.h"
@@ -781,7 +781,6 @@ static const char *modelledExternals[] = {
   "klee_silent_exit",
   "klee_warning",
   "klee_warning_once",
-  "klee_alias_function",
   "klee_stack_trace",
   "llvm.dbg.declare",
   "llvm.dbg.value",
